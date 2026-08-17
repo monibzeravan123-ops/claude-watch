@@ -38,6 +38,7 @@ def resolve_local(path: str) -> dict:
         "subtitle_path": None,
         "info": {"title": p.name, "url": str(p)},
         "downloaded": False,
+        "video_error": None,
     }
 
 
@@ -66,7 +67,7 @@ def download_url(url: str, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
 
-    cmd = [
+    base = [
         "yt-dlp",
         "-N", "8",
         "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
@@ -80,20 +81,45 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
-        "--",
-        url,
     ]
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(base + ["--", url], stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
-    if video is None:
-        raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
-        )
+
+    # YouTube increasingly serves 403 / "confirm you're not a bot" to the default
+    # player client while still handing over subtitles. Retry the stream with
+    # other clients before giving up on frames.
+    if video is None and is_url(url):
+        for client in ("android", "web_safari", "ios", "mweb", "tv_embedded"):
+            print(f"[watch] stream failed; retrying player_client={client}…", file=sys.stderr)
+            subprocess.run(
+                base + ["--extractor-args", f"youtube:player_client={client}", "--", url],
+                stdout=sys.stderr, stderr=sys.stderr,
+            )
+            video = _pick_video(out_dir)
+            if video is not None:
+                print(f"[watch] stream recovered via player_client={client}", file=sys.stderr)
+                break
 
     subtitle = _pick_subtitle(out_dir)
+
+    # Degrade instead of dying: if the stream is unavailable but captions came
+    # through, a transcript-only watch is still worth emitting a report for.
+    video_error = None
+    if video is None:
+        if subtitle is None:
+            raise SystemExit(
+                f"yt-dlp produced neither a video nor subtitles in {out_dir} "
+                f"(exit {result.returncode}). If this is age-gated, private, or "
+                f"bot-checked, pass cookies via yt-dlp --cookies-from-browser."
+            )
+        video_error = (
+            "video stream unavailable (403 / bot-check / DRM) - captions were "
+            "retrieved, continuing transcript-only with no frames"
+        )
+        print(f"[watch] WARNING: {video_error}", file=sys.stderr)
     info_path = out_dir / "video.info.json"
     info: dict = {}
     if info_path.exists():
@@ -110,10 +136,11 @@ def download_url(url: str, out_dir: Path) -> dict:
             info = {"url": url}
 
     return {
-        "video_path": str(video),
+        "video_path": str(video) if video else None,
         "subtitle_path": str(subtitle) if subtitle else None,
         "info": info or {"url": url},
         "downloaded": True,
+        "video_error": video_error,
     }
 
 

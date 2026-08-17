@@ -84,8 +84,16 @@ def main() -> int:
     dl = download(args.source, work / "download")
     video_path = dl["video_path"]
 
-    meta = get_metadata(video_path)
-    full_duration = meta["duration_seconds"]
+    # Transcript-only mode: the stream was unavailable (403 / bot-check / DRM)
+    # but captions came through. Everything that needs the video file is skipped
+    # and we still emit a report rather than losing the whole run.
+    transcript_only = video_path is None
+    if transcript_only:
+        meta = {"duration_seconds": float(dl.get("info", {}).get("duration") or 0.0)}
+        full_duration = meta["duration_seconds"]
+    else:
+        meta = get_metadata(video_path)
+        full_duration = meta["duration_seconds"]
 
     start_sec = parse_time(args.start)
     end_sec = parse_time(args.end)
@@ -117,7 +125,10 @@ def main() -> int:
     print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
 
     use_scene = (not args.no_scene_change) and not focused and args.fps is None
-    if use_scene:
+    if transcript_only:
+        frames = []
+        sampling_mode = "none (no video stream)"
+    elif use_scene:
         print("[watch] extracting scene-change frames (one per shot)…", file=sys.stderr)
         frames = extract_scene_change(
             video_path,
@@ -157,7 +168,7 @@ def main() -> int:
     )
 
     # Hook microscope: dense pass over [0, 10s] when not in focused mode.
-    if (not args.no_hook_microscope) and (not focused) and full_duration >= 30.0:
+    if (not args.no_hook_microscope) and (not focused) and (not transcript_only) and full_duration >= 30.0:
         print("[watch] running hook microscope on first 10s…", file=sys.stderr)
         hook_backend, hook_key = (None, None)
         if not args.no_whisper:
@@ -183,7 +194,13 @@ def main() -> int:
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper:
+    if not transcript_segments and not args.no_whisper and transcript_only:
+        print(
+            "[watch] no captions and no video stream - Whisper needs the audio track, "
+            "so no transcript is possible for this source",
+            file=sys.stderr,
+        )
+    elif not transcript_segments and not args.no_whisper:
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
             try:
@@ -232,6 +249,8 @@ def main() -> int:
     print("# watch: video report")
     print()
     print(f"- **Source:** {args.source}")
+    if dl.get("video_error"):
+        print(f"- **⚠️ Degraded:** {dl['video_error']}")
     if info.get("title"):
         print(f"- **Title:** {info['title']}")
     if info.get("uploader"):

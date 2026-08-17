@@ -227,18 +227,28 @@ def extract_scene_change(
         cmd += ["-ss", f"{start_seconds:.3f}"]
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
-    cmd += [
-        "-i", str(Path(video_path).resolve()),
-        "-vf", vf,
-        "-vsync", "vfr",
-        "-frames:v", str(max_frames),
-        "-q:v", "4",
-        output_pattern,
-    ]
+    # NOTE: the pacing flag is an OUTPUT option - it must come after -i/-vf,
+    # otherwise ffmpeg rejects it as an input option applied to the input file.
+    head = cmd + ["-i", str(Path(video_path).resolve()), "-vf", vf]
+    tail = ["-frames:v", str(max_frames), "-q:v", "4", output_pattern]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit(f"ffmpeg scene-change extraction failed: {result.stderr.strip()}")
+    # Variable frame rate is required so scene-change picks emit one frame each.
+    # ffmpeg 7+ removed `-vsync` in favour of `-fps_mode`; older builds only
+    # know `-vsync`. Try the modern spelling first and fall back on the old one.
+    result = None
+    for pacing_flag in (["-fps_mode", "vfr"], ["-vsync", "vfr"]):
+        result = subprocess.run(head + pacing_flag + tail, capture_output=True, text=True)
+        if result.returncode == 0:
+            break
+        err = (result.stderr or "").lower()
+        if "unrecognized option" not in err and "option not found" not in err:
+            break  # a real failure, not a flag-compatibility problem
+
+    if result is None or result.returncode != 0:
+        raise SystemExit(
+            f"ffmpeg scene-change extraction failed: "
+            f"{(result.stderr or '').strip() if result else 'no result'}"
+        )
 
     # Parse pts_time lines from stdout/stderr (ffmpeg version variance).
     pts_times: list[float] = []

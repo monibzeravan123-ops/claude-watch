@@ -57,11 +57,25 @@ def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if not _which(b)]
 
 
+_PERM_WARNED = False
+
+
 def _check_file_permissions(path: Path) -> None:
-    """Warn to stderr if a secrets file is world/group readable."""
+    """Warn to stderr if a secrets file is world/group readable.
+
+    No-op on Windows: NTFS ACLs don't map onto the POSIX mode bits, and
+    os.stat() reports 0o666 for every ordinary file, so the check fires
+    unconditionally and the advice (`chmod 600`) does nothing there.
+    """
+    global _PERM_WARNED
+    if os.name == "nt":
+        return
+    if _PERM_WARNED:
+        return
     try:
         mode = path.stat().st_mode
         if mode & 0o044:
+            _PERM_WARNED = True  # once per process, not once per key lookup
             sys.stderr.write(
                 f"[watch] WARNING: {path} is readable by other users. "
                 f"Run: chmod 600 {path}\n"
@@ -71,6 +85,26 @@ def _check_file_permissions(path: Path) -> None:
         pass
 
 
+def _read_config_text(path: Path) -> str | None:
+    """Read the .env tolerantly.
+
+    Editors on Windows write cp1252 (an em-dash in a comment is 0x97), which
+    made a strict utf-8 read raise UnicodeDecodeError. That is not an OSError,
+    so it escaped the caller's handler and crashed the whole preflight.
+    """
+    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+        except OSError:
+            return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _read_env_key(name: str) -> str | None:
     value = os.environ.get(name)
     if value and value.strip():
@@ -78,20 +112,20 @@ def _read_env_key(name: str) -> str | None:
     if not CONFIG_FILE.exists():
         return None
     _check_file_permissions(CONFIG_FILE)
-    try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, raw = line.partition("=")
-            if key.strip() != name:
-                continue
-            raw = raw.strip()
-            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                raw = raw[1:-1]
-            return raw or None
-    except OSError:
+    text = _read_config_text(CONFIG_FILE)
+    if text is None:
         return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        if key.strip() != name:
+            continue
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
+            raw = raw[1:-1]
+        return raw or None
     return None
 
 

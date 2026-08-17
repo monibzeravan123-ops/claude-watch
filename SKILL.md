@@ -29,21 +29,32 @@ None of the above add new dependencies — pure ffmpeg + stdlib + the existing W
 Steps 4.4 and 4.5 stage the report inside an Obsidian vault so the user can read it where they read everything else. Resolve the vault directory in this order — first hit wins, and the result is what `$VAULT_DIR` refers to everywhere below:
 
 1. **`$WATCH_VAULT_DIR` env var** — if set and the path exists, use it. This is the user-controlled override.
-2. **`~/Second brain/`** — if it exists as a directory.
-3. **`~/Documents/Obsidian/`** — if it exists as a directory.
-4. **`~/Obsidian/`** — if it exists as a directory.
-5. **None found** — skip Steps 4.4 and 4.5 entirely. Print one line in chat so the user knows what happened: `📄 Report (no vault detected): <workdir>/report.md`. Suggest they set `WATCH_VAULT_DIR` if they want auto-ingest.
+2. **A directory containing a `.obsidian/` folder**, searched one level deep under `~` (and under `~/Documents`). This is the reliable check: an Obsidian vault is *defined* by that marker folder, so detect it instead of guessing at names. Prefer this over the name list below.
+3. **Name fallbacks**, in order: `~/SecondBrain/`, `~/Second brain/`, `~/Second Brain/`, `~/Documents/Obsidian/`, `~/Obsidian/`.
+4. **None found** — skip Steps 4.4 and 4.5 entirely. Print one line in chat so the user knows what happened: `📄 Report (no vault detected): <workdir>/report.md`. Suggest they set `WATCH_VAULT_DIR` if they want auto-ingest.
 
 A quick way to resolve it in bash inside the skill:
 
 ```bash
 VAULT_DIR="${WATCH_VAULT_DIR:-}"
+
+# marker-based detection first - a vault is any dir with .obsidian/ in it
 if [ -z "$VAULT_DIR" ] || [ ! -d "$VAULT_DIR" ]; then
-  for candidate in "$HOME/Second brain" "$HOME/Documents/Obsidian" "$HOME/Obsidian"; do
+  for marker in "$HOME"/*/.obsidian "$HOME"/Documents/*/.obsidian; do
+    [ -d "$marker" ] && { VAULT_DIR="$(dirname "$marker")"; break; }
+  done
+fi
+
+# name fallbacks
+if [ -z "$VAULT_DIR" ] || [ ! -d "$VAULT_DIR" ]; then
+  for candidate in "$HOME/SecondBrain" "$HOME/Second brain" "$HOME/Second Brain" \
+                   "$HOME/Documents/Obsidian" "$HOME/Obsidian"; do
     if [ -d "$candidate" ]; then VAULT_DIR="$candidate"; break; fi
   done
 fi
 ```
+
+⚠️ **Windows:** the `open` command in Step 4.4 is macOS-only. Use `start ""` (cmd) or `explorer.exe` with the `obsidian://` URL, or simply skip the auto-open and just echo the vault-relative path.
 
 The vault's URL-name (for the `obsidian://` URL scheme in Step 4.4) is the final path component — e.g. `$HOME/Second brain` → `Second brain`. URL-encode spaces as `%20`.
 
