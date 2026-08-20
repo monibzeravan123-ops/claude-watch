@@ -173,6 +173,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--force-whisper` — **ignore native captions** and transcribe the audio instead. Captions are the default because they're free, but they are machine speech-to-text of unknown quality, and Whisper is materially better on technical terms and spoken numbers. Use this whenever the report's accuracy matters — a build spec, a value you'll act on, or any re-watch meant to settle a disagreement. Without it, a video that *has* captions will never invoke Whisper no matter what key is configured.
 - `--no-scene-change` — force uniform frame sampling (debug only; usually leave on)
 - `--no-hook-microscope` — skip the 0-10s dense pass (saves ~1 Whisper call)
 

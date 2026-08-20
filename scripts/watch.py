@@ -46,6 +46,13 @@ def main() -> int:
         help="Disable Whisper fallback. Report frames-only if no captions available.",
     )
     ap.add_argument(
+        "--force-whisper",
+        action="store_true",
+        help="Ignore native captions and transcribe the audio with Whisper. "
+             "Captions are speech-to-text of unknown quality and are NOT evidence "
+             "for visual claims; use this when a report's accuracy actually matters.",
+    )
+    ap.add_argument(
         "--whisper",
         choices=["groq", "openai"],
         default=None,
@@ -186,7 +193,10 @@ def main() -> int:
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
     transcript_source: str | None = None
-    if dl.get("subtitle_path"):
+    if dl.get("subtitle_path") and args.force_whisper:
+        print("[watch] --force-whisper: native captions found but ignored",
+              file=sys.stderr)
+    if dl.get("subtitle_path") and not args.force_whisper:
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
