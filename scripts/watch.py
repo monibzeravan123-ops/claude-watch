@@ -22,6 +22,7 @@ from frames import (  # noqa: E402
 )
 from hook import analyse_hook  # noqa: E402
 from pacing import compute_pacing  # noqa: E402
+from provenance import find_prior_watches, resolve_vault  # noqa: E402
 from report import write_report  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -229,6 +230,11 @@ def main() -> int:
 
     info = dl.get("info") or {}
 
+    # Prior watches of this same video. A re-watch must DIFF, not replace:
+    # three passes over one video is how a caveat got summarised away once.
+    _vault = resolve_vault()
+    priors = find_prior_watches(_vault, args.source) if _vault else []
+
     # Build report.md (the ingest-ready artifact).
     hero_frames = select_hero_frames(frames, pacing=pacing)
     report_path = write_report(
@@ -243,9 +249,26 @@ def main() -> int:
         hero_frames=hero_frames,
         pacing=pacing,
         hook=hook_result,
+        priors=priors,
     )
 
     print()
+    if priors:
+        print("=" * 72)
+        print("  RE-WATCH: %d prior watch(es) of this video exist." % len(priors))
+        for _p in priors:
+            print("    - %s  (%s, %s)" % (_p["slug"], _p["watched_at"][:10],
+                                          _p["transcript_source"]))
+        print("")
+        print("  READ THEM BEFORE WRITING THE SUMMARY. This pass must DIFF, not")
+        print("  replace. A caveat an earlier pass recorded and this one drops is")
+        print("  a REGRESSION and must be surfaced, not silently published.")
+        print("")
+        print("  Gate before ingest:")
+        print("    python scripts/provenance.py check <report.md> \\")
+        print("        --frames <workdir>/frames --vault %s" % (_vault or ""))
+        print("=" * 72)
+        print()
     print("# watch: video report")
     print()
     print(f"- **Source:** {args.source}")

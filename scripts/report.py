@@ -19,6 +19,10 @@ import json
 import sys
 from pathlib import Path
 
+from provenance import (  # noqa: E402
+    extract_caveats, render_caveats_section, render_provenance_section,
+)
+
 
 def _pending(hint: str) -> str:
     return f"<!-- pending Claude fill: {hint} -->"
@@ -52,11 +56,18 @@ def write_report(
     pacing: dict,
     hook: dict,
     watched_at: _dt.datetime | None = None,
+    priors: list[dict] | None = None,
+    frames_kept: int | None = None,
 ) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     watched_at = watched_at or _dt.datetime.now().astimezone()
 
     hero_names = [Path(f["path"]).name for f in hero_frames]
+    priors = priors or []
+    caveats = extract_caveats(transcript_segments)
+    frames_total = len(all_frames)
+    if frames_kept is None:
+        frames_kept = frames_total
     lines: list[str] = []
 
     lines.append("---")
@@ -67,11 +78,18 @@ def write_report(
     lines.append(f"intent: {intent or '(none)'}")
     lines.append(f"hero_frames: {_yaml_list(hero_names)}")
     lines.append(f"transcript_source: {transcript_source or 'none'}")
+    lines.append(f"evidence_grade: {'captions-only' if (transcript_source or 'none') == 'captions' else (transcript_source or 'none')}")
+    lines.append(f"prior_watches: {len(priors)}")
+    lines.append(f"caveats_extracted: {len(caveats)}")
+    lines.append(f"frames_extracted: {frames_total}")
     lines.append("---")
     lines.append("")
 
     lines.append(f"# {title}")
     lines.append("")
+
+    lines.extend(render_provenance_section(
+        transcript_source, priors, frames_kept, frames_total))
 
     lines.append("## TL;DR")
     lines.append("")
@@ -79,6 +97,8 @@ def write_report(
         f"3-5 bullets through the lens of: '{intent or 'general summary'}'"
     ))
     lines.append("")
+
+    lines.extend(render_caveats_section(caveats, transcript_source))
 
     lines.append("## Key moments")
     lines.append("")
@@ -177,6 +197,8 @@ def write_report(
     lines.append("")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
+    (out_path.parent / "caveats.json").write_text(
+        json.dumps(caveats, indent=2), encoding="utf-8")
     return out_path
 
 

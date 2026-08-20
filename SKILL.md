@@ -24,6 +24,40 @@ You don't have a video input; this skill gives you one. A Python script download
 
 None of the above add new dependencies — pure ffmpeg + stdlib + the existing Whisper backend.
 
+## Provenance guards (v3 — non-negotiable)
+
+Three watches of one video produced three summaries. By the third, a performance
+warning the author said out loud had been compressed out of the summary while the
+recommendation it qualified had grown *more* confident. A build followed that
+summary and cost the user a 103x slowdown. The warning was never missing from the
+data — it sat in the transcript dump 200 lines below the summary contradicting it.
+
+`scripts/provenance.py` enforces four guards. They are deterministic, so unlike a
+summary they cannot drift between passes:
+
+1. **Caveat extraction.** Every hedge/warning in the transcript is pulled out and
+   written into the report as `## Caveats and warnings (verbatim, auto-extracted)`,
+   placed *directly beneath the TL;DR* — not 200 lines below it. That section is
+   script-generated: **never edit, shorten, reorder, or delete it.**
+2. **Caveat coverage.** Before ingest, every extracted WARNING must be represented
+   somewhere in the narrative. An uncovered warning fails the gate. (Uncovered
+   *optional* hedges are advisory, printed but non-fatal.)
+3. **Re-watch diffing.** Prior watches of the same video are found by video ID and
+   listed in the report. A hedge a prior pass recorded that this pass drops is a
+   **regression** and fails the gate.
+4. **Citation validation.** Every `frame_NNNN` cited must exist on disk. Citing
+   frames that were extracted and thrown away makes a report uncheckable — which
+   is how 126 cited frames ended up backed by 24 retained ones.
+
+**The gate is mandatory.** After filling the report and before offering ingest:
+
+```bash
+python scripts/provenance.py check <report.md> --frames <workdir>/frames --vault <VAULT_DIR>
+```
+
+Non-zero exit means do not ingest until it's addressed. If you disagree with a
+finding, say so to the user explicitly — do not silently proceed.
+
 ## Configuration — finding the user's Obsidian vault
 
 Steps 4.4 and 4.5 stage the report inside an Obsidian vault so the user can read it where they read everything else. Resolve the vault directory in this order — first hit wins, and the result is what `$VAULT_DIR` refers to everywhere below:
@@ -85,6 +119,16 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"
 ```
 
 On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders at `0600` perms, and writes `SETUP_COMPLETE=true` once deps + a key are in place so the next session knows this user has already been through the wizard.
+
+**Captions are not evidence.** Native captions are cheap and often present, so a
+run can look fully successful while producing a report whose every claim is
+caption-derived. Captions transcribe *speech*; they say nothing about what is on
+screen. Any claim about a panel value, a modifier order, a camera angle, or a
+setting must be traced to a frame you actually read. The report stamps
+`evidence_grade: captions-only` in its frontmatter and prints a warning in the
+Provenance section when this applies — do not quietly ignore it. All three watches
+of one kelp video ran captions-only, and a confident visual claim from one of them
+was later proved wrong by frames.
 
 **If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
 
@@ -161,7 +205,9 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 2:15 --end 2:45 --
 python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 ```
 
-**Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
+**Step 3 — Read every frame path the script lists.** Frames are the only evidence for visual claims — a caption saying a value is on screen is not. Do not cite a frame you did not read, and do not cite a frame that will not be retained (see Step 4.4: all frames are staged, not just hero frames).
+
+**Step 3 (cont.)** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
 
 **Step 4 — answer the user, then fill the report.** You now have three streams of evidence:
 - **Frames** — what's on screen at each timestamp
@@ -179,6 +225,26 @@ Then, **fill in the pending markers in `report.md` using the Edit tool**. Walk e
 - **Entities mentioned** — people, companies, tools, places — formatted to match wiki/entities/ slugs (kebab-case, lowercase). Use `[[wikilink]]` style.
 - **Concepts surfaced** — frameworks, mental models, named patterns — short gist each
 
+Two sections are new in v3 and must also be filled:
+- **Provenance → Values not stated in the source** — every number or setting you
+  supply that the video does *not* state, marked `— INVENTED, not in source`.
+  Write `none` only if you introduced none. An invented value reaching a build
+  unlabelled is exactly how a 720° twist angle got applied and believed.
+- **Caveats and warnings** — do NOT fill this; it is script-generated. Your job is
+  to make sure the summary above it does not contradict it. If the transcript says
+  a step is optional and risky, the summary must say so too.
+
+**Then run the gate (mandatory):**
+
+```bash
+python scripts/provenance.py check <report.md> --frames <workdir>/frames --vault <VAULT_DIR>
+```
+
+It checks unfilled markers, warning coverage, frame citations, and regressions
+against prior watches. Fix what it reports, re-run until it passes, and only then
+offer ingest. If it flags something you believe is a false positive, tell the user
+which finding and why — never skip it silently.
+
 The fully-filled `report.md` is what gets ingested at Step 4.5. Do not skip the fill — empty markers won't ingest cleanly.
 
 **Step 4.4 — Stage to the Obsidian vault and open in Obsidian (when a vault is detected).** After filling every marker, resolve `$VAULT_DIR` per the Configuration section. **If no vault is detected, skip this step** and emit `📄 Report (no vault detected): <workdir>/report.md` in chat instead.
@@ -187,7 +253,7 @@ When `$VAULT_DIR` resolves:
 
 1. **Derive the slug now** (do not wait for Step 4.5). Take the video title from `report.md` frontmatter, slugify (lowercase, ASCII-only, hyphens, max 60 chars), append `-YYYY-MM-DD`. Example: `karpathy-claude-md-43k-installs-2026-05-24`.
 2. **Create the staging dir:** `mkdir -p "$VAULT_DIR/raw/watched/<slug>"`.
-3. **Copy `report.md` + every hero frame** (filenames in the report frontmatter under `hero_frames:`) into that dir. The report MUST live inside the vault for Obsidian to open it.
+3. **Copy `report.md`, `caveats.json`, and the ENTIRE `frames/` directory** into that dir — not just the hero frames. The report cites frames by number throughout; retaining a subset makes every other citation uncheckable forever. If the frame count makes that genuinely impractical, then the report must be edited to cite only what was kept — one or the other, never a report citing frames that no longer exist. The report MUST live inside the vault for Obsidian to open it.
 4. **Open in Obsidian via URL scheme** (macOS). The vault URL-name is the final component of `$VAULT_DIR` with spaces URL-encoded as `%20`:
    ```bash
    VAULT_NAME=$(basename "$VAULT_DIR" | sed 's/ /%20/g')
@@ -228,7 +294,7 @@ Routing based on response:
 
 The "different angle" path is what makes /watch truly plug-and-play — the user can watch a video for one reason, then on the way out decide it's actually more useful for a different concept, and the resulting wiki entry reframes accordingly.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If you ingested (Step 4.5 path A), the hero frames + report.md are already copied to Second Brain — you can `rm -rf` the original workdir. If you staged (path B), same — the workdir copy is no longer needed. If the user picked "no, drop it" (path C) and isn't going to ask follow-ups, delete with `rm -rf <dir>`. If they might ask follow-ups, leave it in place.
+**Step 5 — clean up.** ⚠️ Only delete a workdir whose frames have been staged into the vault (Step 4.4). Deleting frames that the staged report still cites is what makes a report permanently unverifiable. The script prints a working directory at the end. If you ingested (Step 4.5 path A), the hero frames + report.md are already copied to Second Brain — you can `rm -rf` the original workdir. If you staged (path B), same — the workdir copy is no longer needed. If the user picked "no, drop it" (path C) and isn't going to ask follow-ups, delete with `rm -rf <dir>`. If they might ask follow-ups, leave it in place.
 
 ## Transcription
 
