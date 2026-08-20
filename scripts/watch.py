@@ -46,6 +46,14 @@ def main() -> int:
         help="Disable Whisper fallback. Report frames-only if no captions available.",
     )
     ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Ignore the persistent download cache and re-fetch the video. "
+             "Downloads normally land in ~/.cache/watch/downloads/<video-id>/ and "
+             "are reused across runs, which matters when watching one long video "
+             "in chunks.",
+    )
+    ap.add_argument(
         "--force-whisper",
         action="store_true",
         help="Ignore native captions and transcribe the audio with Whisper. "
@@ -89,7 +97,7 @@ def main() -> int:
         "[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…",
         file=sys.stderr,
     )
-    dl = download(args.source, work / "download")
+    dl = download(args.source, work / "download", use_cache=not args.no_cache)
     video_path = dl["video_path"]
 
     # Transcript-only mode: the stream was unavailable (403 / bot-check / DRM)

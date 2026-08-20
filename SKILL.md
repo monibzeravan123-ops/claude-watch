@@ -171,11 +171,32 @@ Optional flags:
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max). Setting `--fps` disables scene-change sampling.
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
+- `--no-cache` — ignore the persistent download cache and re-fetch the video
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--force-whisper` — **ignore native captions** and transcribe the audio instead. Captions are the default because they're free, but they are machine speech-to-text of unknown quality, and Whisper is materially better on technical terms and spoken numbers. Use this whenever the report's accuracy matters — a build spec, a value you'll act on, or any re-watch meant to settle a disagreement. Without it, a video that *has* captions will never invoke Whisper no matter what key is configured.
 - `--no-scene-change` — force uniform frame sampling (debug only; usually leave on)
 - `--no-hook-microscope` — skip the 0-10s dense pass (saves ~1 Whisper call)
+
+### Download caching (important for chunked watching)
+
+Downloads persist in `~/.cache/watch/downloads/<video-id>/` (override with
+`$WATCH_CACHE_DIR`) and are reused across runs, keyed by video ID so URL
+query-param churn doesn't cause a miss. The workdir holds only frames, audio and
+the report.
+
+This exists because **working through one long video in chunks is the normal case**
+— a 4-hour tutorial followed step by step needs ~20 separate focused watches, and
+without a cache that is ~20 full re-downloads of the same file. On a 435 MB video
+that is roughly 9 GB of pointless transfer, and a download wait before every chunk
+instead of a cache hit in about a second.
+
+Pass `--no-cache` to force a re-fetch (a video that has been re-uploaded or edited,
+or a suspected truncated download). Truncated files are already rejected
+automatically: a cached video under 1 KB is treated as a miss.
+
+To reclaim space, delete `~/.cache/watch/downloads/` or any single video's
+subdirectory — /watch re-downloads on the next run.
 
 ### Focusing on a section (higher frame rate)
 

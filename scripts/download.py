@@ -7,11 +7,15 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+from provenance import video_key  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
@@ -60,9 +64,77 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def download_url(url: str, out_dir: Path) -> dict:
+def cache_root() -> Path:
+    """Where downloaded videos persist between runs.
+
+    Overridable with $WATCH_CACHE_DIR. Chunked step-by-step watching of a long
+    video re-invokes /watch many times over the same source; without this the
+    same multi-hundred-megabyte file is fetched once per chunk.
+    """
+    env = os.environ.get("WATCH_CACHE_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".cache" / "watch" / "downloads"
+
+
+def _cache_dir_for(url: str) -> Path:
+    return cache_root() / video_key(url)
+
+
+def _cache_probe(cache_dir: Path) -> dict | None:
+    """Return cached artefacts if this directory holds a usable download."""
+    if not cache_dir.is_dir():
+        return None
+    video = _pick_video(cache_dir)
+    subtitle = _pick_subtitle(cache_dir)
+    if video is None and subtitle is None:
+        return None
+    if video is not None and video.stat().st_size < 1024:
+        return None          # truncated / failed download, do not trust it
+    return {"video": video, "subtitle": subtitle}
+
+
+def cache_size_bytes() -> int:
+    root = cache_root()
+    if not root.is_dir():
+        return 0
+    return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+
+
+def download_url(url: str, out_dir: Path, use_cache: bool = True) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+
+    # Download into a persistent per-video cache, not the throwaway workdir,
+    # so repeated chunked watches of one source fetch the stream exactly once.
+    if use_cache:
+        out_dir = _cache_dir_for(url)
+        hit = _cache_probe(out_dir)
+        if hit is not None:
+            size = hit['video'].stat().st_size / 1048576 if hit['video'] else 0
+            print('[watch] cache hit: reusing %.0f MB download from %s'
+                  % (size, out_dir), file=sys.stderr)
+            info = {}
+            info_path = out_dir / 'video.info.json'
+            if info_path.exists():
+                try:
+                    raw = json.loads(info_path.read_text(encoding='utf-8'))
+                    info = {
+                        'title': raw.get('title'),
+                        'uploader': raw.get('uploader') or raw.get('channel'),
+                        'duration': raw.get('duration'),
+                        'url': raw.get('webpage_url') or url,
+                    }
+                except Exception:
+                    info = {'url': url}
+            return {
+                'video_path': str(hit['video']) if hit['video'] else None,
+                'subtitle_path': str(hit['subtitle']) if hit['subtitle'] else None,
+                'info': info or {'url': url},
+                'downloaded': False,
+                'cached': True,
+                'video_error': None if hit['video'] else 'cached subtitles only',
+            }
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -144,9 +216,9 @@ def download_url(url: str, out_dir: Path) -> dict:
     }
 
 
-def download(source: str, out_dir: Path) -> dict:
+def download(source: str, out_dir: Path, use_cache: bool = True) -> dict:
     if is_url(source):
-        return download_url(source, out_dir)
+        return download_url(source, out_dir, use_cache=use_cache)
     return resolve_local(source)
 
 
