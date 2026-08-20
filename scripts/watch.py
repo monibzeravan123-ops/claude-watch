@@ -28,6 +28,16 @@ from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
+# Windows consoles default to cp1252, which cannot encode the arrows and box
+# characters used in the summary. The report file is UTF-8 regardless, so a
+# console that cannot render a glyph should degrade, not abort the run.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="watch",
